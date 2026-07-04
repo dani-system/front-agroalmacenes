@@ -1,0 +1,1328 @@
+import React, { useState, useMemo } from 'react';
+import { useQueries } from '@tanstack/react-query';
+import { useSales, useCreateSale, useCancelSale, useUpdateVoucher } from '../hooks/useSales';
+import { saleService } from '../services/saleService';
+import { useLoans, useCreateLoan, useReturnLoanItems } from '../../loans/hooks/useLoans';
+import { useCompanies } from '../../companies/hooks/useCompanies';
+import { useProducts } from '../../products/hooks/useProducts';
+import { useClients } from '../../clients/hooks/useClients';
+import { usePriceTiers } from '../../price-tiers/hooks/usePriceTiers';
+import { usePaymentMethods } from '../../payment-methods/hooks/usePaymentMethods';
+import { stockService } from '../../stock/services/stockService';
+import { DataTable } from '../../../shared/components/DataTable';
+import { Modal } from '../../../shared/components/Modal';
+import { Pagination } from '../../../shared/components/Pagination';
+import { SearchableSelect } from '../../../shared/components/SearchableSelect';
+import { Receipt, Trash2, Eye, CalendarDays, HandshakeIcon, RotateCcw, XCircle, Copy, Download, User, Package, Building2, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
+import toast from 'react-hot-toast';
+import * as XLSX from 'xlsx';
+import type { Sale, Loan, Company, Product, ProductPrice, Client, PriceTier, PaymentMethod, Stock } from '../../../shared/types';
+
+function getMonthStart() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+function getToday() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+interface PaymentSplit {
+  paymentMethodId: string;
+  amount: number;
+}
+
+// 'MIXED' and 'CREDIT' are special UI-only modes; any other string is a paymentMethod ID
+type PaymentMode = string; // paymentMethodId | 'MIXED' | 'CREDIT'
+
+export function SalesPage() {
+  const [activeTab, setActiveTab] = useState<'sales' | 'boletas' | 'facturas' | 'loans'>('sales');
+  const [page, setPage] = useState(1);
+  const [boletaPage, setBoletaPage] = useState(1);
+  const [facturaPage, setFacturaPage] = useState(1);
+  const [loanPage, setLoanPage] = useState(1);
+  const [companyFilter, setCompanyFilter] = useState('');
+  const [startDate, setStartDate] = useState(getMonthStart);
+  const [endDate, setEndDate] = useState(getToday);
+  const [showModal, setShowModal] = useState(false);
+  const [showLoanModal, setShowLoanModal] = useState(false);
+  const [viewingSale, setViewingSale] = useState<Sale | null>(null);
+  const [viewingLoan, setViewingLoan] = useState<Loan | null>(null);
+  const [returningLoan, setReturningLoan] = useState<Loan | null>(null);
+  const [loanStatusFilter, setLoanStatusFilter] = useState('');
+
+  const { data, isLoading } = useSales({ page, limit: 10, companyId: companyFilter || undefined, startDate, endDate });
+  const { data: boletasData, isLoading: boletasLoading } = useSales({ page: boletaPage, limit: 10, companyId: companyFilter || undefined, startDate, endDate, voucherType: 'BOLETA' });
+  const { data: facturasData, isLoading: facturasLoading } = useSales({ page: facturaPage, limit: 10, companyId: companyFilter || undefined, startDate, endDate, voucherType: 'FACTURA' });
+  const { data: loansData, isLoading: loansLoading } = useLoans({ page: loanPage, limit: 10, status: loanStatusFilter || undefined, startDate, endDate });
+  const { data: companies } = useCompanies();
+  const { data: productsData } = useProducts({ limit: 2000 });
+  const { data: clientsData } = useClients({ limit: 200 });
+  const { data: priceTiers } = usePriceTiers();
+  const { data: paymentMethodsData } = usePaymentMethods();
+  const createSale = useCreateSale();
+  const cancelSale = useCancelSale();
+  const updateVoucher = useUpdateVoucher();
+  const createLoan = useCreateLoan();
+  const returnLoanItems = useReturnLoanItems();
+
+  const activeCompanies: Company[] = (Array.isArray(companies) ? companies : []).filter((c: Company) => c.isActive);
+  const stockQueries = useQueries({
+    queries: activeCompanies.map((c) => ({
+      queryKey: ['stock', c.id],
+      queryFn: () => stockService.getByCompany(c.id, { limit: 9999 }),
+      staleTime: 60_000,
+    })),
+  });
+  const stockByCompany = useMemo(() => {
+    const map: Record<string, Set<string>> = {};
+    activeCompanies.forEach((c, i) => {
+      const raw = stockQueries[i]?.data;
+      const stocks: Stock[] = Array.isArray(raw) ? raw : (raw as any)?.data || [];
+      map[c.id] = new Set(stocks.filter(s => s.quantity > 0).map(s => s.productId));
+    });
+    return map;
+  }, [activeCompanies, stockQueries]);
+
+  const getProductsForCompany = (companyId: string): Product[] => {
+    if (!companyId) return products;
+    const productIds = stockByCompany[companyId];
+    if (!productIds) return products;
+    return products.filter((p: Product) => productIds.has(p.id));
+  };
+
+
+  const [cancellingsale, setCancellingSale] = useState<Sale | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+
+  const [form, setForm] = useState({
+    clientId: '',
+    voucherType: 'NONE' as string,
+    paymentMode: '' as PaymentMode, // paymentMethodId, 'MIXED', or 'CREDIT'
+    mixedPayments: [{ paymentMethodId: '', amount: 0 }] as PaymentSplit[],
+    items: [{ productId: '', companyId: '', quantity: 0, priceTier: '', unitPrice: 0, subtotal: 0 }],
+  });
+
+  const [loanForm, setLoanForm] = useState({
+    borrowerName: '',
+    notes: '',
+    items: [{ productId: '', companyId: '', quantity: 0 }],
+  });
+
+  const [returnForm, setReturnForm] = useState<{ items: { productId: string; companyId: string; quantity: number; max: number }[]; notes: string }>({ items: [], notes: '' });
+
+  const saleTotal = form.items.reduce((s, i) => s + i.subtotal, 0);
+  const isCredit = form.paymentMode === 'CREDIT';
+  const isMixed = form.paymentMode === 'MIXED';
+
+  // Sale form handlers
+  const openCreate = () => {
+    const defaultMethodId = paymentMethods.length > 0 ? paymentMethods[0].id : '';
+    setForm({
+      clientId: '', voucherType: 'NONE', paymentMode: defaultMethodId,
+      mixedPayments: [{ paymentMethodId: '', amount: 0 }],
+      items: [{ productId: '', companyId: '', quantity: 0, priceTier: '', unitPrice: 0, subtotal: 0 }],
+    });
+    setShowModal(true);
+  };
+
+  const addItem = () => setForm(prev => ({ ...prev, items: [...prev.items, { productId: '', companyId: '', quantity: 0, priceTier: '', unitPrice: 0, subtotal: 0 }] }));
+  const removeItem = (idx: number) => setForm(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
+
+  const getUnitPrice = (product: Product | undefined, tierId: string, companyId: string): number | undefined => {
+    if (!product?.prices?.length) return undefined;
+    const companyPrice = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.companyId === companyId);
+    if (companyPrice) return companyPrice.price;
+    const globalPrice = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && !p.companyId);
+    return globalPrice?.price;
+  };
+
+  const updateItem = (idx: number, field: string, value: any) => {
+    setForm(prev => {
+      const items = [...prev.items];
+      items[idx] = { ...items[idx], [field]: value };
+      if (field === 'companyId') {
+        const available = getProductsForCompany(value);
+        if (!available.find(p => p.id === items[idx].productId)) {
+          items[idx].productId = '';
+          items[idx].unitPrice = 0;
+          items[idx].subtotal = 0;
+        }
+      }
+      const item = items[idx];
+      if ((field === 'productId' || field === 'priceTier' || field === 'companyId') && item.productId && item.priceTier && item.companyId) {
+        const product = products.find((p: Product) => p.id === item.productId);
+        const price = getUnitPrice(product, item.priceTier, item.companyId);
+        if (price != null) items[idx].unitPrice = price;
+      }
+      items[idx].subtotal = items[idx].quantity * items[idx].unitPrice;
+      return { ...prev, items };
+    });
+  };
+
+  // Mixed payment split handlers
+  const addPaymentSplit = () => {
+    setForm(prev => {
+      const usedAmount = prev.mixedPayments.reduce((s, p) => s + p.amount, 0);
+      const remaining = Math.round((saleTotal - usedAmount) * 100) / 100;
+      return { ...prev, mixedPayments: [...prev.mixedPayments, { paymentMethodId: '', amount: Math.max(0, remaining) }] };
+    });
+  };
+
+  const removePaymentSplit = (idx: number) => {
+    setForm(prev => {
+      const mixedPayments = prev.mixedPayments.filter((_, i) => i !== idx);
+      if (mixedPayments.length === 1) {
+        mixedPayments[0] = { ...mixedPayments[0], amount: saleTotal };
+      }
+      return { ...prev, mixedPayments };
+    });
+  };
+
+  const updatePayment = (idx: number, field: 'paymentMethodId' | 'amount', value: any) => {
+    setForm(prev => {
+      const mixedPayments = [...prev.mixedPayments];
+      mixedPayments[idx] = { ...mixedPayments[idx], [field]: value };
+      return { ...prev, mixedPayments };
+    });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payload: any = {
+      clientId: form.clientId || undefined,
+      voucherType: form.voucherType,
+      isCredit,
+      items: form.items.map(({ subtotal, ...item }) => item),
+    };
+    if (!isCredit) {
+      if (isMixed) {
+        payload.payments = form.mixedPayments.map(p => ({
+          paymentMethodId: p.paymentMethodId,
+          amount: p.amount,
+        }));
+      } else {
+        // Single payment method — full total
+        payload.payments = [{ paymentMethodId: form.paymentMode, amount: Math.round(saleTotal * 100) / 100 }];
+      }
+    }
+    await createSale.mutateAsync(payload);
+    setShowModal(false);
+  };
+
+  // Loan form handlers
+  const openLoanCreate = () => {
+    const defaultCompanyId = activeCompanies.length === 1 ? activeCompanies[0].id : '';
+    setLoanForm({ borrowerName: '', notes: '', items: [{ productId: '', companyId: defaultCompanyId, quantity: 0 }] });
+    setShowLoanModal(true);
+  };
+
+  const addLoanItem = () => {
+    const defaultCompanyId = activeCompanies.length === 1 ? activeCompanies[0].id : '';
+    setLoanForm(prev => ({ ...prev, items: [...prev.items, { productId: '', companyId: defaultCompanyId, quantity: 0 }] }));
+  };
+  const removeLoanItem = (idx: number) => setLoanForm(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
+
+  const updateLoanItem = (idx: number, field: string, value: any) => {
+    setLoanForm(prev => {
+      const items = [...prev.items];
+      items[idx] = { ...items[idx], [field]: value };
+      return { ...prev, items };
+    });
+  };
+
+  const handleLoanSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await createLoan.mutateAsync(loanForm);
+    setShowLoanModal(false);
+  };
+
+  // Return handlers
+  const openReturn = (loan: Loan) => {
+    setReturnForm({
+      items: loan.items
+        .filter(i => i.quantity - i.returnedQuantity > 0)
+        .map(i => ({ productId: i.productId, companyId: i.companyId, quantity: 0, max: i.quantity - i.returnedQuantity })),
+      notes: '',
+    });
+    setReturningLoan(loan);
+  };
+
+  const updateReturnItem = (idx: number, quantity: number) => {
+    setReturnForm(prev => {
+      const items = [...prev.items];
+      items[idx] = { ...items[idx], quantity: Math.min(quantity, items[idx].max) };
+      return { ...prev, items };
+    });
+  };
+
+  const handleReturnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returningLoan) return;
+    const itemsToReturn = returnForm.items.filter(i => i.quantity > 0).map(({ max, ...item }) => item);
+    if (itemsToReturn.length === 0) return;
+    await returnLoanItems.mutateAsync({ loanId: returningLoan.id, data: { items: itemsToReturn, notes: returnForm.notes || undefined } });
+    setReturningLoan(null);
+  };
+
+  const companyList = Array.isArray(companies) ? companies : [];
+  const products = productsData?.data || [];
+  const clients = clientsData?.data || [];
+  const tiers = Array.isArray(priceTiers) ? priceTiers : [];
+  const paymentMethods: PaymentMethod[] = Array.isArray(paymentMethodsData) ? paymentMethodsData.filter((m: PaymentMethod) => m.isActive) : [];
+  const sales = data?.data || [];
+  const total = data?.total || 0;
+  const totalAmount = data?.totalAmount || 0;
+  const cancelledCount = data?.cancelledCount || 0;
+  const boletas = boletasData?.data || [];
+  const boletasTotal = boletasData?.total || 0;
+  const boletasTotalAmount = boletasData?.totalAmount || 0;
+  const boletasBaseAmount = boletasData?.totalBaseAmount || 0;
+  const boletasIgv = boletasData?.totalIgv || 0;
+  const boletasCancelledCount = boletasData?.cancelledCount || 0;
+  const facturas = facturasData?.data || [];
+  const facturasTotal = facturasData?.total || 0;
+  const facturasTotalAmount = facturasData?.totalAmount || 0;
+  const facturasBaseAmount = facturasData?.totalBaseAmount || 0;
+  const facturasIgv = facturasData?.totalIgv || 0;
+  const facturasCancelledCount = facturasData?.cancelledCount || 0;
+  const loans = loansData?.data || [];
+  const loansTotal = loansData?.total || 0;
+
+  const companyMap = useMemo(() => new Map<string, Company>(companyList.map((c: Company) => [c.id, c])), [companyList]);
+  const clientMap = useMemo(() => new Map<string, Client>(clients.map((c: Client) => [c.id, c])), [clients]);
+  const productMap = useMemo(() => new Map<string, Product>(products.map((p: Product) => [p.id, p])), [products]);
+
+  const getCompanyName = (id?: string, name?: string) => name || (id ? companyMap.get(id)?.name || 'N/A' : 'Mixta');
+  const getClientName = (id?: string) => id ? clientMap.get(id)?.name || 'N/A' : 'Sin cliente';
+  const getProductName = (id: string, name?: string) => name || productMap.get(id)?.name || id;
+
+  const saleBaseById = useMemo(() => {
+    const allSales: Sale[] = [...sales, ...boletas, ...facturas];
+    const map = new Map<string, { base: number; igv: number }>();
+    for (const sale of allSales) {
+      const base = sale.items.reduce((sum: number, item: any) => {
+        const product = productMap.get(item.productId);
+        const taxType = product?.taxType || 'GRAVADO';
+        const b = taxType === 'GRAVADO' ? (item.subtotal / 1.18) : item.subtotal;
+        return sum + b;
+      }, 0);
+      const roundedBase = Math.round(base * 100) / 100;
+      const igv = Math.round((sale.total - roundedBase) * 100) / 100;
+      map.set(sale.id, { base: roundedBase, igv });
+    }
+    return map;
+  }, [sales, boletas, facturas, productMap]);
+
+  const getSaleBaseAmount = (sale: Sale) => {
+    const cached = saleBaseById.get(sale.id);
+    if (cached) return cached.base;
+    const base = sale.items.reduce((sum: number, item: any) => {
+      const product = productMap.get(item.productId);
+      const taxType = product?.taxType || 'GRAVADO';
+      const b = taxType === 'GRAVADO' ? (item.subtotal / 1.18) : item.subtotal;
+      return sum + b;
+    }, 0);
+    return Math.round(base * 100) / 100;
+  };
+
+  const getSaleIgv = (sale: Sale) => {
+    const cached = saleBaseById.get(sale.id);
+    if (cached) return cached.igv;
+    return Math.round((sale.total - getSaleBaseAmount(sale)) * 100) / 100;
+  };
+
+
+  const handleExportVouchers = async (voucherType: 'BOLETA' | 'FACTURA') => {
+    try {
+      const result = await saleService.getAll({ limit: 9999, companyId: companyFilter || undefined, startDate, endDate, voucherType });
+      const allSales: Sale[] = result?.data || [];
+      if (allSales.length === 0) { toast.error('No hay datos para exportar'); return; }
+
+      const rows = allSales.filter(s => !s.isCancelled).map(sale => {
+        const companyIds = [...new Set(sale.items.map((i: any) => i.companyId))];
+        const empresa = companyIds.length === 1 ? getCompanyName(companyIds[0]) : 'Mixta';
+        const productosStr = sale.items.map((i: any) => `${getProductName(i.productId, i.productName)} x${i.quantity}`).join(', ');
+        const baseAmount = getSaleBaseAmount(sale);
+        const igv = getSaleIgv(sale);
+        const paymentLabel = sale.isCredit ? 'Crédito' : sale.payments?.map(p => p.paymentMethodName).join(' + ') || 'Efectivo';
+
+        return {
+          'Fecha': new Date(sale.date).toLocaleDateString('es-PE'),
+          'Cliente': getClientName(sale.clientId),
+          'Empresa': empresa,
+          'Productos': productosStr,
+          'Valor Venta': Math.round(baseAmount * 100) / 100,
+          'IGV': Math.round(igv * 100) / 100,
+          'Total': Math.round(sale.total * 100) / 100,
+          'Método de Pago': paymentLabel,
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      const sheetName = voucherType === 'BOLETA' ? 'Boletas' : 'Facturas';
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      const prefix = voucherType === 'BOLETA' ? 'boletas' : 'facturas';
+      const monthStr = startDate.slice(0, 7);
+      XLSX.writeFile(wb, `${prefix}_${monthStr}.xlsx`);
+      toast.success(`${rows.length} ${sheetName.toLowerCase()} exportada(s)`);
+    } catch {
+      toast.error('Error al exportar');
+    }
+  };
+
+
+  const getPaymentLabel = (sale: Sale) => {
+    if (sale.isCredit) return <span className="text-orange-600 font-medium">Crédito</span>;
+    if (sale.payments && sale.payments.length > 0) {
+      const label = sale.payments.map(p => p.paymentMethodName).join(' + ');
+      return <span className="text-primary-600">{label}</span>;
+    }
+    return <span className="text-primary-600">Efectivo</span>;
+  };
+
+  const salesColumns = [
+    { key: 'date', header: 'Fecha', render: (item: Sale) => new Date(item.date).toLocaleDateString('es-PE') },
+    { key: 'companyId', header: 'Empresa', render: (item: Sale) => {
+      const companyIds = [...new Set(item.items.map(i => i.companyId))];
+      if (companyIds.length === 1) return getCompanyName(companyIds[0]);
+      return <span className="text-purple-600 font-medium">Mixta</span>;
+    }},
+    { key: 'clientId', header: 'Cliente', render: (item: Sale) => getClientName(item.clientId) },
+    { key: 'items', header: 'Items', render: (item: Sale) => `${item.items.length} producto(s)` },
+    { key: 'total', header: 'Total', render: (item: Sale) => item.isCancelled ? <span className="line-through text-gray-400">S/ {item.total.toFixed(2)}</span> : `S/ ${item.total.toFixed(2)}` },
+    { key: 'voucherType', header: 'Comprobante', render: (item: Sale) => {
+      if (item.voucherType === 'BOLETA') return <span className="text-primary-600 font-medium">Boleta</span>;
+      if (item.voucherType === 'FACTURA') return <span className="text-blue-600 font-medium">Factura</span>;
+      return <span className="text-gray-400">-</span>;
+    }},
+    { key: 'payment', header: 'Pago', render: (item: Sale) => item.isCancelled ? <span className="text-red-600 font-medium">Anulada</span> : getPaymentLabel(item) },
+    { key: 'actions', header: '', render: (item: Sale) => (
+      <div className="flex items-center gap-2">
+        <button onClick={(e) => { e.stopPropagation(); setViewingSale(item); }} className="text-primary-600 hover:text-primary-800 flex items-center gap-1 text-xs font-medium"><Eye size={15} /> Ver</button>
+        {!item.isCancelled && (
+          <button onClick={(e) => { e.stopPropagation(); setCancellingSale(item); setCancelReason(''); }} className="text-red-500 hover:text-red-700 flex items-center gap-1 text-xs font-medium"><XCircle size={15} /> Anular</button>
+        )}
+      </div>
+    )},
+  ];
+
+  const voucherColumns = [
+    { key: 'date', header: 'Fecha', render: (item: Sale) => new Date(item.date).toLocaleDateString('es-PE') },
+    { key: 'companyId', header: 'Empresa', render: (item: Sale) => {
+      const companyIds = [...new Set(item.items.map(i => i.companyId))];
+      if (companyIds.length === 1) return getCompanyName(companyIds[0]);
+      return <span className="text-purple-600 font-medium">Mixta</span>;
+    }},
+    { key: 'clientId', header: 'Cliente', render: (item: Sale) => getClientName(item.clientId) },
+    { key: 'items', header: 'Items', render: (item: Sale) => `${item.items.length} producto(s)` },
+    { key: 'baseAmount', header: 'Valor Venta', render: (item: Sale) => {
+      const base = getSaleBaseAmount(item);
+      return item.isCancelled ? <span className="line-through text-gray-400">S/ {base.toFixed(2)}</span> : `S/ ${base.toFixed(2)}`;
+    }},
+    { key: 'igv', header: 'IGV', render: (item: Sale) => {
+      const igv = getSaleIgv(item);
+      return item.isCancelled ? <span className="line-through text-gray-400">S/ {igv.toFixed(2)}</span> : igv > 0 ? <span className="text-orange-600">S/ {igv.toFixed(2)}</span> : <span className="text-gray-400">S/ 0.00</span>;
+    }},
+    { key: 'total', header: 'Total', render: (item: Sale) => item.isCancelled ? <span className="line-through text-gray-400">S/ {item.total.toFixed(2)}</span> : <span className="font-medium">S/ {item.total.toFixed(2)}</span> },
+    { key: 'payment', header: 'Pago', render: (item: Sale) => item.isCancelled ? <span className="text-red-600 font-medium">Anulada</span> : getPaymentLabel(item) },
+    { key: 'actions', header: '', render: (item: Sale) => (
+      <div className="flex items-center gap-2">
+        <button onClick={(e) => { e.stopPropagation(); setViewingSale(item); }} className="text-primary-600 hover:text-primary-800 flex items-center gap-1 text-xs font-medium"><Eye size={15} /> Ver</button>
+        {!item.isCancelled && (
+          <button onClick={(e) => { e.stopPropagation(); setCancellingSale(item); setCancelReason(''); }} className="text-red-500 hover:text-red-700 flex items-center gap-1 text-xs font-medium"><XCircle size={15} /> Anular</button>
+        )}
+      </div>
+    )},
+  ];
+
+  const loanStatusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      ACTIVE: 'bg-blue-100 text-blue-700',
+      PARTIAL: 'bg-yellow-100 text-yellow-700',
+      RETURNED: 'bg-primary-100 text-primary-700',
+    };
+    const labels: Record<string, string> = { ACTIVE: 'Activo', PARTIAL: 'Parcial', RETURNED: 'Devuelto' };
+    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${styles[status] || ''}`}>{labels[status] || status}</span>;
+  };
+
+  const loanColumns = [
+    { key: 'date', header: 'Fecha', render: (item: Loan) => new Date(item.date).toLocaleDateString('es-PE') },
+    { key: 'borrowerName', header: 'Prestatario', render: (item: Loan) => item.borrowerName },
+    { key: 'items', header: 'Productos', render: (item: Loan) => item.items.map(i => `${getProductName(i.productId, i.productName)} x${i.quantity}`).join(', ') },
+    { key: 'status', header: 'Estado', render: (item: Loan) => loanStatusBadge(item.status) },
+    { key: 'actions', header: '', render: (item: Loan) => (
+      <div className="flex items-center gap-2">
+        <button onClick={(e) => { e.stopPropagation(); setViewingLoan(item); }} className="text-blue-600 hover:text-blue-800 flex items-center gap-1 text-xs font-medium"><Eye size={15} /> Ver</button>
+        {item.status !== 'RETURNED' && (
+          <button onClick={(e) => { e.stopPropagation(); openReturn(item); }} className="text-purple-600 hover:text-purple-800 flex items-center gap-1 text-xs font-medium"><RotateCcw size={15} /> Devolver</button>
+        )}
+      </div>
+    )},
+  ];
+
+  const mixedSumValid = !isMixed || (
+    Math.round(form.mixedPayments.reduce((s, p) => s + p.amount, 0) * 100) / 100 === Math.round(saleTotal * 100) / 100
+  );
+  const paymentValid = isCredit || (form.paymentMode !== '' && (isMixed ? mixedSumValid : true));
+
+  return (
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+        <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><Receipt size={24} /> Ventas</h1>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={openLoanCreate} className="flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+            <HandshakeIcon size={18} /> Préstamo
+          </button>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="mb-4 flex flex-col gap-2">
+        {(activeTab === 'sales' || activeTab === 'boletas' || activeTab === 'facturas') && (
+          <select value={companyFilter} onChange={(e) => { setCompanyFilter(e.target.value); setPage(1); setBoletaPage(1); setFacturaPage(1); }} className="w-full sm:w-auto px-3 py-2 border rounded-lg text-sm">
+            <option value="">Todas las empresas</option>
+            {companyList.map((c: Company) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        )}
+        {activeTab === 'loans' && (
+          <select value={loanStatusFilter} onChange={(e) => { setLoanStatusFilter(e.target.value); setLoanPage(1); }} className="w-full sm:w-auto px-3 py-2 border rounded-lg text-sm">
+            <option value="">Todos los estados</option>
+            <option value="ACTIVE">Activo</option>
+            <option value="PARTIAL">Parcial</option>
+            <option value="RETURNED">Devuelto</option>
+          </select>
+        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setPage(1); setBoletaPage(1); setFacturaPage(1); setLoanPage(1); }} className="flex-1 min-w-[130px] px-3 py-2 border rounded-lg text-sm" />
+          <span className="text-gray-400 text-sm flex-shrink-0">—</span>
+          <input type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setPage(1); setBoletaPage(1); setFacturaPage(1); setLoanPage(1); }} className="flex-1 min-w-[130px] px-3 py-2 border rounded-lg text-sm" />
+          {(startDate !== getMonthStart() || endDate !== getToday()) && (
+            <button onClick={() => { setStartDate(getMonthStart()); setEndDate(getToday()); setPage(1); setBoletaPage(1); setFacturaPage(1); setLoanPage(1); }} className="flex items-center gap-1 px-3 py-2 text-sm text-primary-700 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 flex-shrink-0">
+              <CalendarDays size={14} /> Este mes
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Total del período */}
+      {activeTab === 'sales' && (
+        <div className="mb-4 bg-primary-50 border border-primary-200 rounded-lg px-4 py-2 flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2 text-sm text-primary-700">
+            <span>{total - cancelledCount} venta(s) activa(s) en el período</span>
+            {cancelledCount > 0 && (
+              <span className="px-2 py-0.5 bg-red-100 text-red-600 text-xs font-semibold rounded-full">
+                {cancelledCount} anulada{cancelledCount !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+          <span className="text-lg font-bold text-primary-700">Total: S/ {totalAmount.toFixed(2)}</span>
+        </div>
+      )}
+      {activeTab === 'boletas' && (
+        <div className="mb-4 bg-primary-50 border border-primary-200 rounded-lg px-4 py-3">
+          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+            <div className="flex items-center gap-2 text-sm text-primary-700">
+              <span>{boletasTotal - boletasCancelledCount} boleta(s) activa(s) en el período</span>
+              {boletasCancelledCount > 0 && (
+                <span className="px-2 py-0.5 bg-red-100 text-red-600 text-xs font-semibold rounded-full">
+                  {boletasCancelledCount} anulada{boletasCancelledCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-lg font-bold text-primary-700">Valor Venta: S/ {boletasBaseAmount.toFixed(2)}</span>
+              <button onClick={() => handleExportVouchers('BOLETA')} className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-primary-700 bg-primary-100 border border-primary-300 rounded hover:bg-primary-200 transition-colors">
+                <Download size={14} /> Excel
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-4 text-xs text-primary-600">
+            <span>Total: S/ {boletasTotalAmount.toFixed(2)}</span>
+            <span>IGV: S/ {boletasIgv.toFixed(2)}</span>
+          </div>
+        </div>
+      )}
+      {activeTab === 'facturas' && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+            <div className="flex items-center gap-2 text-sm text-blue-700">
+              <span>{facturasTotal - facturasCancelledCount} factura(s) activa(s) en el período</span>
+              {facturasCancelledCount > 0 && (
+                <span className="px-2 py-0.5 bg-red-100 text-red-600 text-xs font-semibold rounded-full">
+                  {facturasCancelledCount} anulada{facturasCancelledCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-lg font-bold text-blue-700">Valor Venta: S/ {facturasBaseAmount.toFixed(2)}</span>
+              <button onClick={() => handleExportVouchers('FACTURA')} className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-100 border border-blue-300 rounded hover:bg-blue-200 transition-colors">
+                <Download size={14} /> Excel
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-4 text-xs text-blue-600">
+            <span>Total: S/ {facturasTotalAmount.toFixed(2)}</span>
+            <span>IGV: S/ {facturasIgv.toFixed(2)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Tab switcher — scrollable on mobile */}
+      <div className="flex border-b mb-4 overflow-x-auto -mx-4 px-4 lg:mx-0 lg:px-0 scrollbar-hide">
+        {([
+          { id: 'sales',    label: 'Ventas',     activeColor: 'border-primary-600 text-primary-600' },
+          { id: 'boletas',  label: 'Boletas',    activeColor: 'border-primary-600 text-primary-600' },
+          { id: 'facturas', label: 'Facturas',   activeColor: 'border-blue-600 text-blue-600' },
+          { id: 'loans',    label: 'Préstamos',  activeColor: 'border-purple-600 text-purple-600' },
+        ] as const).map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={`whitespace-nowrap flex-shrink-0 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === tab.id ? tab.activeColor : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Sales Tab ── */}
+      {activeTab === 'sales' && (
+        <>
+          <div className="lg:hidden space-y-3">
+            {isLoading ? <div className="py-16 text-center text-gray-400 text-sm">Cargando...</div>
+              : sales.length === 0 ? <div className="py-16 text-center text-gray-400 text-sm">Sin ventas en el período</div>
+              : sales.map((sale: Sale) => {
+                const companyIds = [...new Set(sale.items.map((i: any) => i.companyId))];
+                const companyLabel = companyIds.length === 1 ? getCompanyName(companyIds[0]) : 'Mixta';
+                const cancelled = sale.isCancelled;
+                return (
+                  <div key={sale.id} className={`bg-white rounded-xl border shadow-sm p-4 ${cancelled ? 'opacity-60 border-red-200 bg-red-50/30' : sale.isCredit ? 'border-yellow-200' : 'border-gray-200'}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-xs text-gray-500">
+                        {new Date(sale.date).toLocaleDateString('es-PE')} · <span className="font-medium text-gray-700">{companyLabel}</span>
+                      </div>
+                      {cancelled
+                        ? <span className="text-xs font-semibold text-red-600 bg-red-100 px-2 py-0.5 rounded-full flex-shrink-0">Anulada</span>
+                        : <span className="flex-shrink-0 text-xs">{getPaymentLabel(sale)}</span>}
+                    </div>
+                    <div className="text-sm font-medium text-gray-800 mb-2">{getClientName(sale.clientId)}</div>
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                        <span>{sale.items.length} prod.</span>
+                        {sale.voucherType === 'BOLETA' && <span className="text-primary-600 font-medium">Boleta</span>}
+                        {sale.voucherType === 'FACTURA' && <span className="text-blue-600 font-medium">Factura</span>}
+                      </div>
+                      <span className={`font-bold text-base ${cancelled ? 'line-through text-gray-400' : 'text-gray-800'}`}>S/ {sale.total.toFixed(2)}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setViewingSale(sale)} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors"><Eye size={13} /> Ver detalle</button>
+                      {!cancelled && <button onClick={() => { setCancellingSale(sale); setCancelReason(''); }} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"><XCircle size={13} /> Anular</button>}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+          <div className="hidden lg:block">
+            <DataTable columns={salesColumns} data={sales} isLoading={isLoading} rowClassName={(sale: Sale) => sale?.isCancelled ? 'bg-red-50 opacity-60' : sale?.isCredit ? 'hover:bg-yellow-50' : 'hover:bg-primary-50'} />
+          </div>
+          <Pagination page={page} totalPages={Math.ceil(total / 10)} onPageChange={setPage} />
+        </>
+      )}
+
+      {/* ── Boletas Tab ── */}
+      {activeTab === 'boletas' && (
+        <>
+          <div className="lg:hidden space-y-3">
+            {boletasLoading ? <div className="py-16 text-center text-gray-400 text-sm">Cargando...</div>
+              : boletas.length === 0 ? <div className="py-16 text-center text-gray-400 text-sm">Sin boletas en el período</div>
+              : boletas.map((sale: Sale) => {
+                const companyIds = [...new Set(sale.items.map((i: any) => i.companyId))];
+                const companyLabel = companyIds.length === 1 ? getCompanyName(companyIds[0]) : 'Mixta';
+                const cancelled = sale.isCancelled;
+                const base = getSaleBaseAmount(sale);
+                const igv = getSaleIgv(sale);
+                return (
+                  <div key={sale.id} className={`bg-white rounded-xl border shadow-sm p-4 ${cancelled ? 'opacity-60 border-red-200 bg-red-50/30' : 'border-gray-200'}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-xs text-gray-500">{new Date(sale.date).toLocaleDateString('es-PE')} · <span className="font-medium text-gray-700">{companyLabel}</span></div>
+                      {cancelled ? <span className="text-xs font-semibold text-red-600 bg-red-100 px-2 py-0.5 rounded-full flex-shrink-0">Anulada</span> : <span className="flex-shrink-0 text-xs">{getPaymentLabel(sale)}</span>}
+                    </div>
+                    <div className="text-sm font-medium text-gray-800 mb-2">{getClientName(sale.clientId)}</div>
+                    <div className="flex items-end justify-between gap-2 mb-3">
+                      <div className="text-xs text-gray-500 space-y-0.5">
+                        <div>Valor Venta: <span className={cancelled ? 'line-through text-gray-400' : 'font-medium text-gray-700'}>S/ {base.toFixed(2)}</span></div>
+                        {igv > 0 && <div>IGV: <span className={cancelled ? 'line-through text-gray-400' : 'text-orange-600'}>S/ {igv.toFixed(2)}</span></div>}
+                      </div>
+                      <span className={`font-bold text-base flex-shrink-0 ${cancelled ? 'line-through text-gray-400' : 'text-gray-800'}`}>S/ {sale.total.toFixed(2)}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setViewingSale(sale)} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors"><Eye size={13} /> Ver detalle</button>
+                      {!cancelled && <button onClick={() => { setCancellingSale(sale); setCancelReason(''); }} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"><XCircle size={13} /> Anular</button>}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+          <div className="hidden lg:block">
+            <DataTable columns={voucherColumns} data={boletas} isLoading={boletasLoading} rowClassName={(sale: Sale) => sale?.isCancelled ? 'bg-red-50 opacity-60' : sale?.isCredit ? 'hover:bg-yellow-50' : 'hover:bg-primary-50'} />
+          </div>
+          <Pagination page={boletaPage} totalPages={Math.ceil(boletasTotal / 10)} onPageChange={setBoletaPage} />
+        </>
+      )}
+
+      {/* ── Facturas Tab ── */}
+      {activeTab === 'facturas' && (
+        <>
+          <div className="lg:hidden space-y-3">
+            {facturasLoading ? <div className="py-16 text-center text-gray-400 text-sm">Cargando...</div>
+              : facturas.length === 0 ? <div className="py-16 text-center text-gray-400 text-sm">Sin facturas en el período</div>
+              : facturas.map((sale: Sale) => {
+                const companyIds = [...new Set(sale.items.map((i: any) => i.companyId))];
+                const companyLabel = companyIds.length === 1 ? getCompanyName(companyIds[0]) : 'Mixta';
+                const cancelled = sale.isCancelled;
+                const base = getSaleBaseAmount(sale);
+                const igv = getSaleIgv(sale);
+                return (
+                  <div key={sale.id} className={`bg-white rounded-xl border shadow-sm p-4 ${cancelled ? 'opacity-60 border-red-200 bg-red-50/30' : 'border-blue-100'}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="text-xs text-gray-500">{new Date(sale.date).toLocaleDateString('es-PE')} · <span className="font-medium text-gray-700">{companyLabel}</span></div>
+                      {cancelled ? <span className="text-xs font-semibold text-red-600 bg-red-100 px-2 py-0.5 rounded-full flex-shrink-0">Anulada</span> : <span className="flex-shrink-0 text-xs">{getPaymentLabel(sale)}</span>}
+                    </div>
+                    <div className="text-sm font-medium text-gray-800 mb-2">{getClientName(sale.clientId)}</div>
+                    <div className="flex items-end justify-between gap-2 mb-3">
+                      <div className="text-xs text-gray-500 space-y-0.5">
+                        <div>Valor Venta: <span className={cancelled ? 'line-through text-gray-400' : 'font-medium text-gray-700'}>S/ {base.toFixed(2)}</span></div>
+                        {igv > 0 && <div>IGV: <span className={cancelled ? 'line-through text-gray-400' : 'text-orange-600'}>S/ {igv.toFixed(2)}</span></div>}
+                      </div>
+                      <span className={`font-bold text-base flex-shrink-0 ${cancelled ? 'line-through text-gray-400' : 'text-gray-800'}`}>S/ {sale.total.toFixed(2)}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setViewingSale(sale)} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"><Eye size={13} /> Ver detalle</button>
+                      {!cancelled && <button onClick={() => { setCancellingSale(sale); setCancelReason(''); }} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"><XCircle size={13} /> Anular</button>}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+          <div className="hidden lg:block">
+            <DataTable columns={voucherColumns} data={facturas} isLoading={facturasLoading} rowClassName={(sale: Sale) => sale?.isCancelled ? 'bg-red-50 opacity-60' : sale?.isCredit ? 'hover:bg-yellow-50' : 'hover:bg-blue-50'} />
+          </div>
+          <Pagination page={facturaPage} totalPages={Math.ceil(facturasTotal / 10)} onPageChange={setFacturaPage} />
+        </>
+      )}
+
+      {/* ── Loans Tab ── */}
+      {activeTab === 'loans' && (
+        <>
+          <div className="lg:hidden space-y-3">
+            {loansLoading ? <div className="py-16 text-center text-gray-400 text-sm">Cargando...</div>
+              : loans.length === 0 ? <div className="py-16 text-center text-gray-400 text-sm">Sin préstamos en el período</div>
+              : loans.map((loan: Loan) => (
+                <div key={loan.id} className={`bg-white rounded-xl border shadow-sm p-4 ${loan.status === 'RETURNED' ? 'border-gray-200' : 'border-purple-100'}`}>
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <span className="text-xs text-gray-500">{new Date(loan.date).toLocaleDateString('es-PE')}</span>
+                    {loanStatusBadge(loan.status)}
+                  </div>
+                  <div className="text-sm font-semibold text-gray-800 mb-1.5">{loan.borrowerName}</div>
+                  <div className="text-xs text-gray-500 mb-3 line-clamp-2">
+                    {loan.items.map((i: any) => `${getProductName(i.productId, i.productName)} x${i.quantity}`).join(', ')}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setViewingLoan(loan)} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"><Eye size={13} /> Ver</button>
+                    {loan.status !== 'RETURNED' && <button onClick={() => openReturn(loan)} className="flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors"><RotateCcw size={13} /> Devolver</button>}
+                  </div>
+                </div>
+              ))}
+          </div>
+          <div className="hidden lg:block">
+            <DataTable columns={loanColumns} data={loans} isLoading={loansLoading} rowClassName={(loan: Loan) => loan.status === 'RETURNED' ? 'hover:bg-primary-50' : 'hover:bg-purple-50'} />
+          </div>
+          <Pagination page={loanPage} totalPages={Math.ceil(loansTotal / 10)} onPageChange={setLoanPage} />
+        </>
+      )}
+
+      {/* Modal crear venta */}
+      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nueva Venta" size="lg">
+        <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Método de pago */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Método de pago</label>
+            {paymentMethods.length === 0 ? (
+              <div className="text-sm text-gray-400 py-2">Cargando métodos de pago...</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {paymentMethods.map((m: PaymentMethod) => (
+                  <button key={m.id} type="button" onClick={() => setForm({ ...form, paymentMode: m.id })}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${form.paymentMode === m.id ? 'bg-primary-600 text-white border-primary-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                    {m.name}
+                  </button>
+                ))}
+                <button type="button" onClick={() => setForm({ ...form, paymentMode: 'MIXED', mixedPayments: [{ paymentMethodId: '', amount: 0 }, { paymentMethodId: '', amount: 0 }] })}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${isMixed ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                  Mixto
+                </button>
+                <button type="button" onClick={() => setForm({ ...form, paymentMode: 'CREDIT' })}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${isCredit ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                  Crédito
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Mixed payment split (solo si es Mixto) */}
+          {isMixed && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium text-blue-800">Dividir pago</label>
+                <button type="button" onClick={addPaymentSplit} className="text-xs text-blue-600 hover:text-blue-800 font-medium">+ Agregar método</button>
+              </div>
+              <div className="space-y-2">
+                {form.mixedPayments.map((payment, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <select
+                      value={payment.paymentMethodId}
+                      onChange={(e) => updatePayment(idx, 'paymentMethodId', e.target.value)}
+                      className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                      required
+                    >
+                      <option value="">Seleccionar método...</option>
+                      {paymentMethods.map((m: PaymentMethod) => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                    <div className="relative w-32">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-sm text-gray-400">S/</span>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={payment.amount || ''}
+                        onChange={(e) => updatePayment(idx, 'amount', parseFloat(e.target.value) || 0)}
+                        className="w-full pl-7 pr-2 py-2 border rounded-lg text-sm"
+                        placeholder="0.00"
+                        required
+                      />
+                    </div>
+                    {form.mixedPayments.length > 2 && (
+                      <button type="button" onClick={() => removePaymentSplit(idx)} className="text-red-400 hover:text-red-600 p-1">
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {!mixedSumValid && saleTotal > 0 && (
+                <p className="text-xs text-red-500 mt-2">
+                  La suma (S/ {form.mixedPayments.reduce((s, p) => s + p.amount, 0).toFixed(2)}) debe ser igual al total (S/ {saleTotal.toFixed(2)})
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Cliente y Boleta */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Cliente {isCredit ? '(obligatorio)' : '(opcional)'}</label>
+              <select value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm" required={isCredit}>
+                <option value="">Sin cliente</option>
+                {clients.map((c: Client) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Comprobante</label>
+              <div className="flex gap-1">
+                {[{ value: 'NONE', label: 'No' }, { value: 'BOLETA', label: 'Boleta' }, { value: 'FACTURA', label: 'Factura' }].map(opt => (
+                  <button key={opt.value} type="button" onClick={() => setForm({ ...form, voucherType: opt.value })}
+                    className={`flex-1 py-1.5 rounded text-xs font-medium border transition-colors ${form.voucherType === opt.value
+                      ? opt.value === 'BOLETA' ? 'bg-primary-600 text-white border-primary-600' : opt.value === 'FACTURA' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-600 text-white border-gray-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Items */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-medium text-gray-700">Productos</label>
+              <button type="button" onClick={addItem} className="text-sm text-primary-600 hover:text-primary-800 font-medium">+ Agregar producto</button>
+            </div>
+            <div className="space-y-3 max-h-72 overflow-y-auto">
+              {form.items.map((item, idx) => (
+                <div key={idx} className="bg-gray-50 rounded-lg p-3 relative">
+                  {form.items.length > 1 && (
+                    <button type="button" onClick={() => removeItem(idx)} className="absolute top-2 right-2 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Empresa</label>
+                      <select value={item.companyId} onChange={(e) => updateItem(idx, 'companyId', e.target.value)} className="w-full px-2 py-1.5 border rounded text-sm bg-white" required>
+                        <option value="">Seleccionar...</option>
+                        {companyList.map((c: Company) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Producto</label>
+                      <SearchableSelect
+                        options={getProductsForCompany(item.companyId).map((p: Product) => ({ value: p.id, label: p.name, sublabel: p.activeIngredient }))}
+                        value={item.productId}
+                        onChange={(v) => updateItem(idx, 'productId', v)}
+                        placeholder={item.companyId ? "Buscar producto o ingrediente..." : "Selecciona empresa primero"}
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Rango precio</label>
+                      <select value={item.priceTier} onChange={(e) => updateItem(idx, 'priceTier', e.target.value)} className="w-full px-2 py-1.5 border rounded text-sm bg-white" required>
+                        <option value="">Seleccionar...</option>
+                        {tiers.map((t: PriceTier) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Cantidad</label>
+                      <input type="number" min="0.01" step="0.01" value={item.quantity || ''} onChange={(e) => updateItem(idx, 'quantity', parseFloat(e.target.value) || 0)} className="w-full px-2 py-1.5 border rounded text-sm" required />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Precio unit.</label>
+                      <input type="number" min="0.01" step="0.01" value={item.unitPrice || ''} onChange={(e) => updateItem(idx, 'unitPrice', parseFloat(e.target.value) || 0)} className="w-full px-2 py-1.5 border rounded text-sm" required />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Subtotal</label>
+                      <div className="px-2 py-1.5 bg-white border rounded text-sm font-medium text-gray-700">S/ {item.subtotal.toFixed(2)}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Total y Submit */}
+          <div className="bg-primary-50 p-3 rounded-lg flex items-center justify-between">
+            <span className="text-sm font-medium text-primary-800">Total de la venta</span>
+            <span className="text-xl font-bold text-primary-700">S/ {saleTotal.toFixed(2)}</span>
+          </div>
+          <button type="submit" disabled={createSale.isPending || !paymentValid} className="w-full py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium disabled:opacity-50">
+            {createSale.isPending ? 'Registrando...' : 'Registrar Venta'}
+          </button>
+        </form>
+      </Modal>
+
+      {/* Modal detalle de venta */}
+      <Modal isOpen={!!viewingSale} onClose={() => setViewingSale(null)} title="Detalle de Venta" size="lg">
+        {viewingSale && (
+          <div className="space-y-4">
+            {/* Banner anulada */}
+            {viewingSale.isCancelled && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <span className="text-sm font-medium text-red-700">Venta anulada</span>
+                {viewingSale.cancelReason && <p className="text-xs text-red-600 mt-1">Razón: {viewingSale.cancelReason}</p>}
+              </div>
+            )}
+
+            {/* Info general */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="block text-xs text-gray-500">Fecha</span>
+                <span className="text-sm font-medium">{new Date(viewingSale.date).toLocaleDateString('es-PE', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="block text-xs text-gray-500">Cliente</span>
+                <span className="text-sm font-medium">{getClientName(viewingSale.clientId)}</span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="block text-xs text-gray-500">Tipo de pago</span>
+                <span className={`text-sm font-medium ${viewingSale.isCredit ? 'text-orange-600' : 'text-primary-600'}`}>
+                  {viewingSale.isCredit ? 'Crédito' : 'Pago inmediato'}
+                </span>
+              </div>
+              <div className="bg-gray-50 rounded-lg p-3">
+                <span className="block text-xs text-gray-500 mb-1">Comprobante</span>
+                {viewingSale.isCancelled ? (
+                  <span className={`text-sm font-medium ${viewingSale.voucherType === 'BOLETA' ? 'text-primary-600' : viewingSale.voucherType === 'FACTURA' ? 'text-blue-600' : 'text-gray-500'}`}>
+                    {viewingSale.voucherType === 'BOLETA' ? 'Boleta' : viewingSale.voucherType === 'FACTURA' ? 'Factura' : 'Sin comprobante'}
+                  </span>
+                ) : (
+                  <div className="flex gap-1">
+                    {([['NONE', 'No'], ['BOLETA', 'Boleta'], ['FACTURA', 'Factura']] as const).map(([val, label]) => (
+                      <button key={val} type="button"
+                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${viewingSale.voucherType === val ? (val === 'BOLETA' ? 'bg-primary-600 text-white' : val === 'FACTURA' ? 'bg-blue-600 text-white' : 'bg-gray-600 text-white') : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}
+                        disabled={updateVoucher.isPending}
+                        onClick={() => {
+                          if (viewingSale.voucherType !== val) {
+                            updateVoucher.mutate({ id: viewingSale.id, voucherType: val }, {
+                              onSuccess: () => setViewingSale({ ...viewingSale, voucherType: val }),
+                            });
+                          }
+                        }}
+                      >{label}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Desglose de pagos */}
+            {!viewingSale.isCredit && viewingSale.payments && viewingSale.payments.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">Desglose de pagos</h3>
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Método</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Monto</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {viewingSale.payments.map((payment, idx) => (
+                        <tr key={idx}>
+                          <td className="px-3 py-2 font-medium">{payment.paymentMethodName}</td>
+                          <td className="px-3 py-2 text-right text-primary-600 font-medium">S/ {payment.amount.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Productos */}
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Productos ({viewingSale.items.length})</h3>
+              <div className="border rounded-lg overflow-hidden">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Producto</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Empresa</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Cant.</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">P. Unit.</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">IGV Unit.</th>
+                      <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {viewingSale.items.map((item, idx) => {
+                      const product = productMap.get(item.productId);
+                      const company = companyMap.get(item.companyId);
+                      const tier = tiers.find((t: PriceTier) => t.id === item.priceTier);
+                      const taxType = product?.taxType || 'GRAVADO';
+                      const sunatTier = tiers.find((t: PriceTier) => t.name === 'PRECIO SUNAT');
+                      const sunatPrice = sunatTier ? product?.prices?.find((p: ProductPrice) => p.priceTierId === sunatTier.id)?.price : undefined;
+                      const precioVenta = sunatPrice != null
+                        ? (taxType === 'GRAVADO' ? sunatPrice / 1.18 : sunatPrice)
+                        : null;
+                      return (
+                        <tr key={idx}>
+                          <td className="px-3 py-2">
+                            <div className="font-medium">{item.productName || product?.name || item.productId}</div>
+                            {tier && <div className="text-xs text-gray-400">{tier.name}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-gray-600">{company?.name || 'N/A'}</td>
+                          <td className="px-3 py-2 text-right">{item.quantity}</td>
+                          <td className="px-3 py-2 text-right">S/ {item.unitPrice.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right">
+                            {precioVenta != null ? (
+                              <span className="inline-flex items-center gap-1">
+                                S/ {precioVenta.toFixed(8)}
+                                <button
+                                  type="button"
+                                  onClick={() => { navigator.clipboard.writeText(precioVenta.toFixed(8)); toast.success('Precio copiado'); }}
+                                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                                  title="Copiar precio"
+                                >
+                                  <Copy size={13} />
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium">S/ {item.subtotal.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Total */}
+            <div className="bg-primary-50 p-3 rounded-lg flex items-center justify-between">
+              <span className="text-sm font-medium text-primary-800">Total</span>
+              <span className="text-xl font-bold text-primary-700">S/ {viewingSale.total.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal crear préstamo */}
+      <Modal isOpen={showLoanModal} onClose={() => setShowLoanModal(false)} title="Nuevo Préstamo" size="lg">
+        <form onSubmit={handleLoanSubmit} className="space-y-5 pb-4">
+          {/* Prestatario (obligatorio) */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del local (obligatorio)</label>
+            <input type="text" value={loanForm.borrowerName} onChange={(e) => setLoanForm({ ...loanForm, borrowerName: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="Ej: Tienda Don Juan, Ferretería El Sol..." required />
+          </div>
+
+          {/* Items */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-sm font-medium text-gray-700">Productos</label>
+              <button type="button" onClick={addLoanItem} className="text-sm text-purple-600 hover:text-purple-800 font-medium">+ Agregar producto</button>
+            </div>
+            <div className="space-y-3">
+              {loanForm.items.map((item, idx) => (
+                <div key={idx} className="bg-gray-50 rounded-lg p-3 relative">
+                  {loanForm.items.length > 1 && (
+                    <button type="button" onClick={() => removeLoanItem(idx)} className="absolute top-2 right-2 text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Empresa</label>
+                      <select value={item.companyId} onChange={(e) => updateLoanItem(idx, 'companyId', e.target.value)} className="w-full px-2 py-1.5 border rounded text-sm bg-white" required>
+                        <option value="">Seleccionar...</option>
+                        {companyList.map((c: Company) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Producto</label>
+                      <SearchableSelect
+                        options={products.map((p: Product) => ({ value: p.id, label: p.name }))}
+                        value={item.productId}
+                        onChange={(v) => updateLoanItem(idx, 'productId', v)}
+                        placeholder="Buscar producto..."
+                        minChars={1}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Cantidad</label>
+                      <input type="number" min="0.01" step="0.01" value={item.quantity || ''} onChange={(e) => updateLoanItem(idx, 'quantity', parseFloat(e.target.value) || 0)} className="w-full px-2 py-1.5 border rounded text-sm" required />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Notas */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Notas (opcional)</label>
+            <textarea value={loanForm.notes} onChange={(e) => setLoanForm({ ...loanForm, notes: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="Notas adicionales..." />
+          </div>
+
+          <button type="submit" disabled={createLoan.isPending} className="w-full py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium">
+            {createLoan.isPending ? 'Registrando...' : 'Registrar Préstamo'}
+          </button>
+        </form>
+      </Modal>
+
+      {/* Modal detalle de préstamo */}
+      <Modal isOpen={!!viewingLoan} onClose={() => setViewingLoan(null)} title="Detalle de Préstamo" size="lg">
+        {viewingLoan && (
+          <div className="space-y-5">
+            {/* Header — estado + info principal */}
+            <div className={`rounded-xl p-4 flex items-start justify-between gap-3 ${
+              viewingLoan.status === 'RETURNED' ? 'bg-green-50 border border-green-200' :
+              viewingLoan.status === 'PARTIAL'  ? 'bg-yellow-50 border border-yellow-200' :
+                                                  'bg-purple-50 border border-purple-200'
+            }`}>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  {viewingLoan.status === 'RETURNED'
+                    ? <CheckCircle2 size={16} className="text-green-600" />
+                    : viewingLoan.status === 'PARTIAL'
+                    ? <Clock size={16} className="text-yellow-600" />
+                    : <AlertCircle size={16} className="text-purple-600" />
+                  }
+                  {loanStatusBadge(viewingLoan.status)}
+                </div>
+                <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-800">
+                  <User size={14} className="text-gray-500 shrink-0" />
+                  {viewingLoan.borrowerName}
+                </div>
+                <div className="text-xs text-gray-500">
+                  {new Date(viewingLoan.date).toLocaleDateString('es-PE', { day: '2-digit', month: 'long', year: 'numeric' })}
+                </div>
+              </div>
+              {/* Resumen totales */}
+              <div className="text-right shrink-0">
+                <div className="text-xs text-gray-500 mb-0.5">Total prestado</div>
+                <div className="text-lg font-bold text-gray-800">{viewingLoan.items.reduce((s, i) => s + i.quantity, 0)} uds</div>
+                {viewingLoan.status !== 'RETURNED' && (
+                  <div className="text-xs text-orange-600 font-medium mt-0.5">
+                    Pendiente: {viewingLoan.items.reduce((s, i) => s + (i.quantity - i.returnedQuantity), 0)} uds
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {viewingLoan.notes && (
+              <div className="bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-600 border border-gray-200">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mr-1">Nota:</span>{viewingLoan.notes}
+              </div>
+            )}
+
+            {/* Tabla de productos */}
+            <div>
+              <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-700 mb-2">
+                <Package size={14} /> Productos prestados
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                    <tr>
+                      <th className="px-3 py-2.5 text-left">Producto</th>
+                      <th className="px-3 py-2.5 text-left hidden sm:table-cell">Empresa</th>
+                      <th className="px-3 py-2.5 text-right">Prestado</th>
+                      <th className="px-3 py-2.5 text-right">Devuelto</th>
+                      <th className="px-3 py-2.5 text-right">Pendiente</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {viewingLoan.items.map((item, idx) => {
+                      const pending = item.quantity - item.returnedQuantity;
+                      return (
+                        <tr key={idx} className={pending === 0 ? 'bg-green-50/40' : ''}>
+                          <td className="px-3 py-2.5 font-medium text-gray-800">
+                            {getProductName(item.productId, item.productName)}
+                          </td>
+                          <td className="px-3 py-2.5 text-gray-500 text-xs hidden sm:table-cell">
+                            <span className="flex items-center gap-1"><Building2 size={11} />{getCompanyName(item.companyId, item.companyName)}</span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{item.quantity}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-primary-600 font-medium">{item.returnedQuantity}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            <span className={`font-semibold ${pending > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                              {pending > 0 ? pending : '✓'}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Historial de devoluciones */}
+            {viewingLoan.returns.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-700 mb-2">
+                  <RotateCcw size={14} /> Historial de devoluciones
+                </div>
+                <div className="space-y-2">
+                  {viewingLoan.returns.map((ret, idx) => (
+                    <div key={idx} className="bg-primary-50 border border-primary-100 rounded-xl p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-primary-700 bg-primary-100 px-2 py-0.5 rounded-full">Devolución #{idx + 1}</span>
+                        <span className="text-xs text-gray-500">{new Date(ret.date).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                      </div>
+                      <div className="space-y-1">
+                        {ret.items.map((ri, ridx) => (
+                          <div key={ridx} className="flex items-center justify-between text-sm">
+                            <span className="text-gray-700">{getProductName(ri.productId, ri.productName)}</span>
+                            <span className="font-medium text-gray-800 tabular-nums">x{ri.quantity}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {ret.notes && <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-primary-200">{ret.notes}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {viewingLoan.status !== 'RETURNED' && (
+              <button
+                onClick={() => { setViewingLoan(null); openReturn(viewingLoan); }}
+                className="w-full py-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 font-semibold flex items-center justify-center gap-2 transition-colors"
+              >
+                <RotateCcw size={16} /> Registrar Devolución
+              </button>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal devolución */}
+      <Modal isOpen={!!returningLoan} onClose={() => setReturningLoan(null)} title="Registrar Devolución">
+        {returningLoan && (
+          <form onSubmit={handleReturnSubmit} className="space-y-4">
+            <div className="bg-purple-50 rounded-lg p-3">
+              <span className="text-sm text-purple-700">Préstamo a: <strong>{returningLoan.borrowerName}</strong></span>
+            </div>
+
+            <div>
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Items pendientes de devolución</h3>
+              <div className="space-y-3">
+                {returnForm.items.map((item, idx) => (
+                  <div key={idx} className="bg-gray-50 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <span className="text-sm font-medium">{getProductName(item.productId)}</span>
+                        <span className="text-xs text-gray-500 ml-2">({getCompanyName(item.companyId)})</span>
+                      </div>
+                      <span className="text-xs text-gray-500">Máx: {item.max}</span>
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      max={item.max}
+                      step="0.01"
+                      value={item.quantity || ''}
+                      onChange={(e) => updateReturnItem(idx, parseFloat(e.target.value) || 0)}
+                      className="w-full px-2 py-1.5 border rounded text-sm"
+                      placeholder={`Cantidad a devolver (máx ${item.max})`}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Notas (opcional)</label>
+              <textarea value={returnForm.notes} onChange={(e) => setReturnForm({ ...returnForm, notes: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="Notas sobre la devolución..." />
+            </div>
+
+            <button
+              type="submit"
+              disabled={returnLoanItems.isPending || returnForm.items.every(i => !i.quantity)}
+              className="w-full py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium disabled:opacity-50"
+            >
+              {returnLoanItems.isPending ? 'Registrando...' : 'Confirmar Devolución'}
+            </button>
+          </form>
+        )}
+      </Modal>
+
+      {/* Modal anular venta */}
+      <Modal isOpen={!!cancellingsale} onClose={() => setCancellingSale(null)} title="Anular Venta">
+        {cancellingsale && (
+          <form onSubmit={async (e) => { e.preventDefault(); await cancelSale.mutateAsync({ id: cancellingsale.id, reason: cancelReason }); setCancellingSale(null); }} className="space-y-4">
+            <div className="bg-red-50 rounded-lg p-3">
+              <p className="text-sm text-red-700">Esta acción <strong>anulará la venta</strong> por S/ {cancellingsale.total.toFixed(2)}:</p>
+              <ul className="text-xs text-red-600 mt-2 space-y-1 list-disc list-inside">
+                <li>Se devolverá el stock de todos los productos</li>
+                {!cancellingsale.isCredit && <li>Se eliminarán las entradas de caja asociadas</li>}
+                {cancellingsale.isCredit && <li>Se anulará la cuenta por cobrar</li>}
+              </ul>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Razón de la anulación</label>
+              <textarea value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="Ej: Error en el registro, cliente desistió..." required />
+            </div>
+            <button type="submit" disabled={cancelSale.isPending} className="w-full py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium disabled:opacity-50">
+              {cancelSale.isPending ? 'Anulando...' : 'Confirmar Anulación'}
+            </button>
+          </form>
+        )}
+      </Modal>
+    </div>
+  );
+}
