@@ -40,6 +40,7 @@ export function AppRoutes() {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Suspense fallback={<Loading />}><DashboardPage /></Suspense>} />
         <Route path="products" element={<Suspense fallback={<Loading />}><ProductsPage /></Suspense>} />
+        <Route path="purchase/new" element={<Navigate to="/purchases/new" replace />} />
         <Route path="purchases" element={<Suspense fallback={<Loading />}><PurchasesPage /></Suspense>} />
         <Route path="purchases/new" element={<Suspense fallback={<Loading />}><NewPurchasePage /></Suspense>} />
         <Route path="purchases/:id" element={<Suspense fallback={<Loading />}><PurchaseDetailPage /></Suspense>} />
