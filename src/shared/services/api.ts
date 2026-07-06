@@ -24,20 +24,23 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    const requestUrl = error.config?.url || '';
     console.error('[agro-debug] api error', {
       status: error.response?.status,
-      url: error.config?.url,
+      url: requestUrl,
       baseURL: error.config?.baseURL,
       message: error.response?.data?.message || error.message,
       pathname: window.location.pathname,
     });
-    if (error.response?.status === 401 && window.location.pathname !== '/login') {
-      console.warn('[agro-debug] redirecting to login because API returned 401', {
-        url: error.config?.url,
+    if (error.response?.status === 401 && requestUrl.includes('/auth/me')) {
+      console.warn('[agro-debug] redirecting to login because session check failed', {
+        url: requestUrl,
         pathname: window.location.pathname,
       });
       localStorage.removeItem('token');
-      window.location.href = '/login';
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   },
