@@ -155,35 +155,6 @@ export function NewPurchasePage() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [pendingPayload, setPendingPayload] = useState<any>(null);
 
-  useEffect(() => {
-    console.info('[agro-debug] NewPurchasePage mounted', {
-      pathname: window.location.pathname,
-      search: window.location.search,
-      hasToken: Boolean(localStorage.getItem('token')),
-    });
-  }, []);
-
-  useEffect(() => {
-    console.info('[agro-debug] NewPurchasePage queries', {
-      companies: {
-        isLoading: (companies as any)?.isLoading,
-        isError: (companies as any)?.isError,
-      },
-      products: {
-        hasData: Boolean(productsData),
-      },
-      cashRegisterToday: {
-        hasData: Boolean(cashRegisterToday),
-      },
-      priceTiers: {
-        hasData: Boolean(priceTiersData),
-      },
-      categories: {
-        hasData: Boolean(categoriesData),
-      },
-    });
-  }, [companies, productsData, cashRegisterToday, priceTiersData, categoriesData]);
-
   interface BonifItem { productId: string; quantity: number; lotNumber: string; expirationDate: string; }
   const [bonificationItems, setBonificationItems] = useState<BonifItem[]>([]);
   const addBonifItem = () => setBonificationItems(prev => [...prev, { productId: '', quantity: 0, lotNumber: '', expirationDate: '' }]);
