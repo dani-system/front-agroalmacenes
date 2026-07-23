@@ -4,7 +4,7 @@ export interface ApiResponse<T> { data: T; message: string; }
 export interface Category { id: string; name: string; description?: string; isActive: boolean; parentId?: string; }
 export interface ProductActiveIngredient { name: string; concentration?: string; }
 export interface Product { id: string; name: string; description?: string; categoryId: string; unit: string; activeIngredient?: string; activeIngredients?: ProductActiveIngredient[]; taxType?: string; prices: ProductPrice[]; tracksLot?: boolean; isActive: boolean; minSalePrice?: number; minMarginPercent?: number; location?: string; locations?: string[]; supplier?: string; control?: string; cultivo?: string; dosis?: string; imageUrl?: string; createdAt: string; }
-export interface ProductPrice { priceTierId: string; companyId?: string; price: number; }
+export interface ProductPrice { priceTierId: string; companyId?: string; branchId?: string; price: number; }
 export interface Company { id: string; name: string; ruc: string; address?: string; phone?: string; isActive: boolean; }
 export interface PriceTier { id: string; name: string; description?: string; priority: number; isActive: boolean; }
 export interface Stock { id: string; productId: string; companyId: string; quantity: number; lastUpdated: string; }
@@ -37,7 +37,9 @@ export interface AgreementInvoice { apId: string; purchaseId?: string; purchaseR
 export interface AgreementInstallment { id?: string; amount: number; dueDate: string; status: 'PENDING' | 'PAID'; paidDate?: string; voucherUrl?: string; }
 export interface AgreementPayment { id?: string; amount: number; paymentDate: string; codigoTransferencia: string; notes?: string; registeredBy?: string; registeredByName?: string; voucherUrl?: string; }
 export interface PaymentAgreement { id: string; supplier: string; invoices: AgreementInvoice[]; totalAmount: number; paidAmount: number; pendingAmount: number; status: 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED'; paymentScheduleType: 'SINGLE_DATE' | 'INSTALLMENTS'; currency?: 'PEN' | 'USD'; dueDate?: string; installments: AgreementInstallment[]; payments: AgreementPayment[]; documentType?: 'FACTURA' | 'BOLETA'; documentSeries?: string; documentNumber?: string; remisionGuia?: RemisionGuia; notes?: string; cancellationReason?: string; cancelledAt?: string; createdAt: string; }
-export interface User { id: string; username: string; email?: string; fullName: string; role: string; isActive?: boolean; createdAt?: string; updatedAt?: string; }
+export interface Branch { id: string; code: string; name: string; address?: string; phone?: string; companyIds: string[]; defaultCompanyId?: string; isActive: boolean; isMain: boolean; }
+export interface UserBranchAssignment { branchId: string; role: string; }
+export interface User { id: string; username: string; email?: string; fullName: string; role: string; branchAssignments?: UserBranchAssignment[]; isActive?: boolean; createdAt?: string; updatedAt?: string; }
 
 export interface StockAdjustment { id: string; productId: string; companyId: string; type: 'INCREASE' | 'DECREASE'; quantity: number; reason: string; previousQuantity: number; newQuantity: number; adjustedBy?: string; date: string; createdAt: string; }
 

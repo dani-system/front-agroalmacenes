@@ -20,8 +20,7 @@ const formatDate = (d?: string | Date) => {
 };
 
 const IGV_RATE = 0.18;
-const BRAND_BLUE = '#1e3a8a';
-const BRAND_BLUE_LIGHT = '#dbeafe';
+const BRAND_GREEN = '#16a34a';
 const BORDER_GRAY = '#94a3b8';
 
 function labeledCell(label: string, value: string) {
@@ -80,17 +79,17 @@ function buildDocDefinition({ quote, products, company, client, vendor, currency
             stack: [
               {
                 table: { widths: ['*'], body: [[{ text: `R.U.C. ${company?.ruc || '—'}`, alignment: 'center', bold: true, fontSize: 10, margin: [0, 4] }]] },
-                layout: { hLineColor: () => BRAND_BLUE, vLineColor: () => BRAND_BLUE, hLineWidth: () => 1, vLineWidth: () => 1 },
+                layout: { hLineColor: () => BRAND_GREEN, vLineColor: () => BRAND_GREEN, hLineWidth: () => 1, vLineWidth: () => 1 },
               },
               { text: '', margin: [0, 3] },
               {
-                table: { widths: ['*'], body: [[{ text: 'COTIZACIÓN', alignment: 'center', bold: true, fontSize: 12, color: 'white', fillColor: BRAND_BLUE, margin: [0, 5] }]] },
+                table: { widths: ['*'], body: [[{ text: 'COTIZACIÓN', alignment: 'center', bold: true, fontSize: 12, color: 'white', fillColor: BRAND_GREEN, margin: [0, 5] }]] },
                 layout: 'noBorders',
               },
               { text: '', margin: [0, 3] },
               {
-                table: { widths: ['*'], body: [[{ text: `NRO-${String(quote.number || 0).padStart(8, '0')}`, alignment: 'center', bold: true, fontSize: 11, color: BRAND_BLUE, margin: [0, 4] }]] },
-                layout: { hLineColor: () => BRAND_BLUE, vLineColor: () => BRAND_BLUE, hLineWidth: () => 1, vLineWidth: () => 1 },
+                table: { widths: ['*'], body: [[{ text: `NRO-${String(quote.number || 0).padStart(8, '0')}`, alignment: 'center', bold: true, fontSize: 11, color: BRAND_GREEN, margin: [0, 4] }]] },
+                layout: { hLineColor: () => BRAND_GREEN, vLineColor: () => BRAND_GREEN, hLineWidth: () => 1, vLineWidth: () => 1 },
               },
             ],
           },
@@ -160,7 +159,7 @@ function buildDocDefinition({ quote, products, company, client, vendor, currency
           ],
         },
         layout: {
-          fillColor: (row: number) => (row === 0 ? BRAND_BLUE : null),
+          fillColor: (row: number) => (row === 0 ? BRAND_GREEN : null),
           hLineColor: () => BORDER_GRAY, vLineColor: () => BORDER_GRAY,
           hLineWidth: (i: number, node: any) => (i === 0 || i === 1 || i === node.table.body.length ? 1 : 0),
           vLineWidth: () => 1,
@@ -189,7 +188,7 @@ function buildDocDefinition({ quote, products, company, client, vendor, currency
             table: {
               widths: ['auto', 5, '*'],
               body: [
-                [{ text: 'CONDICIONES COMERCIALES', colSpan: 3, bold: true, color: 'white', fillColor: BRAND_BLUE, fontSize: 9, margin: [4, 3] }, {}, {}],
+                [{ text: 'CONDICIONES COMERCIALES', colSpan: 3, bold: true, color: 'white', fillColor: BRAND_GREEN, fontSize: 9, margin: [4, 3] }, {}, {}],
                 [{ text: 'Forma de pago', bold: true, fontSize: 8 }, { text: ':', fontSize: 8 }, { text: 'CONTADO', fontSize: 8 }],
                 [{ text: 'Tiempo de Entrega', bold: true, fontSize: 8 }, { text: ':', fontSize: 8 }, { text: 'INMEDIATO', fontSize: 8 }],
                 [{ text: 'Lugar de Entrega', bold: true, fontSize: 8 }, { text: ':', fontSize: 8 }, { text: client?.address || ' ', fontSize: 8 }],
@@ -211,17 +210,17 @@ function buildDocDefinition({ quote, products, company, client, vendor, currency
               widths: ['*', 30, 60],
               body: [
                 [
-                  { text: 'OP. GRAVADAS', bold: true, color: 'white', fillColor: BRAND_BLUE, fontSize: 9, alignment: 'right', margin: [4, 3] },
+                  { text: 'OP. GRAVADAS', bold: true, color: 'white', fillColor: BRAND_GREEN, fontSize: 9, alignment: 'right', margin: [4, 3] },
                   { text: currencySymbol, fontSize: 9, alignment: 'center', margin: [0, 3] },
                   { text: subtotal.toFixed(2), fontSize: 9, alignment: 'right', margin: [0, 3] },
                 ],
                 [
-                  { text: 'I.G.V. 18%', bold: true, color: 'white', fillColor: BRAND_BLUE, fontSize: 9, alignment: 'right', margin: [4, 3] },
+                  { text: 'I.G.V. 18%', bold: true, color: 'white', fillColor: BRAND_GREEN, fontSize: 9, alignment: 'right', margin: [4, 3] },
                   { text: currencySymbol, fontSize: 9, alignment: 'center', margin: [0, 3] },
                   { text: igv.toFixed(2), fontSize: 9, alignment: 'right', margin: [0, 3] },
                 ],
                 [
-                  { text: 'IMPORTE TOTAL', bold: true, color: 'white', fillColor: BRAND_BLUE, fontSize: 10, alignment: 'right', margin: [4, 3] },
+                  { text: 'IMPORTE TOTAL', bold: true, color: 'white', fillColor: BRAND_GREEN, fontSize: 10, alignment: 'right', margin: [4, 3] },
                   { text: currencySymbol, fontSize: 10, alignment: 'center', bold: true, margin: [0, 3] },
                   { text: quote.total.toFixed(2), fontSize: 10, alignment: 'right', bold: true, margin: [0, 3] },
                 ],

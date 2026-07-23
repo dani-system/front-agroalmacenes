@@ -9,7 +9,7 @@ import type { User } from '../../../shared/types';
 import { useAuth } from '../../../app/providers/AuthProvider';
 
 export function UsersPage() {
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, branches } = useAuth();
   const isVendedor = currentUser?.role === 'VENDEDOR';
 
   const [page, setPage] = useState(1);
@@ -34,18 +34,18 @@ export function UsersPage() {
   const changePassword = useChangePassword();
   const toggleStatus = useToggleUserStatus();
 
-  const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', fullName: '', role: 'VENDEDOR' });
-  const [editForm, setEditForm] = useState({ fullName: '', role: '', username: '', email: '' });
+  const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', fullName: '', role: 'VENDEDOR', branchIds: [] as string[] });
+  const [editForm, setEditForm] = useState({ fullName: '', role: '', username: '', email: '', branchIds: [] as string[] });
   const [passwordForm, setPasswordForm] = useState({ newPassword: '' });
 
   const openCreate = () => {
-    setCreateForm({ username: '', email: '', password: '', fullName: '', role: 'VENDEDOR' });
+    setCreateForm({ username: '', email: '', password: '', fullName: '', role: 'VENDEDOR', branchIds: branches.map((branch) => branch.id) });
     setShowCreateModal(true);
   };
 
   const openEdit = (user: User) => {
     setEditingUser(user);
-    setEditForm({ fullName: user.fullName, role: user.role, username: user.username, email: user.email || '' });
+    setEditForm({ fullName: user.fullName, role: user.role, username: user.username, email: user.email || '', branchIds: (user.branchAssignments || []).map((assignment) => assignment.branchId) });
   };
 
   const openPassword = (user: User) => {
@@ -55,7 +55,7 @@ export function UsersPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const payload: any = { username: createForm.username, password: createForm.password, fullName: createForm.fullName, role: createForm.role };
+    const payload: any = { username: createForm.username, password: createForm.password, fullName: createForm.fullName, role: createForm.role, branchAssignments: createForm.role === 'ADMIN' ? [] : createForm.branchIds.map((branchId) => ({ branchId, role: createForm.role })) };
     if (createForm.email) payload.email = createForm.email;
     await createUser.mutateAsync(payload);
     setShowCreateModal(false);
@@ -64,7 +64,7 @@ export function UsersPage() {
   const handleEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    const payload: any = { fullName: editForm.fullName, role: editForm.role, username: editForm.username };
+    const payload: any = { fullName: editForm.fullName, role: editForm.role, username: editForm.username, branchAssignments: editForm.role === 'ADMIN' ? [] : editForm.branchIds.map((branchId) => ({ branchId, role: editForm.role })) };
     if (editForm.email) payload.email = editForm.email;
     else payload.email = '';
     await updateUser.mutateAsync({ id: editingUser.id, data: payload });
@@ -223,9 +223,11 @@ export function UsersPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
             <select value={createForm.role} onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })} className="w-full px-3 py-2 border rounded-lg">
               <option value="VENDEDOR">Vendedor</option>
+              <option value="ALMACENERO">Almacenero</option>
               <option value="ADMIN">Admin</option>
             </select>
           </div>
+          {createForm.role !== 'ADMIN' && <div><label className="block text-sm font-medium text-gray-700 mb-2">Sucursales asignadas</label><div className="space-y-2">{branches.map((branch) => <label key={branch.id} className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={createForm.branchIds.includes(branch.id)} onChange={() => setCreateForm({ ...createForm, branchIds: createForm.branchIds.includes(branch.id) ? createForm.branchIds.filter((id) => id !== branch.id) : [...createForm.branchIds, branch.id] })} />{branch.code} · {branch.name}</label>)}</div></div>}
           <button type="submit" disabled={createUser.isPending} className="w-full py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50">
             {createUser.isPending ? 'Creando...' : 'Crear Usuario'}
           </button>
@@ -247,6 +249,7 @@ export function UsersPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-gray-400">(opcional)</span></label>
             <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full px-3 py-2 border rounded-lg" />
           </div>
+          {editForm.role !== 'ADMIN' && <div><label className="block text-sm font-medium text-gray-700 mb-2">Sucursales asignadas</label><div className="space-y-2">{branches.map((branch) => <label key={branch.id} className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={editForm.branchIds.includes(branch.id)} onChange={() => setEditForm({ ...editForm, branchIds: editForm.branchIds.includes(branch.id) ? editForm.branchIds.filter((id) => id !== branch.id) : [...editForm.branchIds, branch.id] })} />{branch.code} · {branch.name}</label>)}</div></div>}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Rol</label>
             <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })} className="w-full px-3 py-2 border rounded-lg">

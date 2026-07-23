@@ -7,6 +7,14 @@ import { AuthProvider } from './app/providers/AuthProvider';
 import { AppRoutes } from './app/routes/AppRoutes';
 import './index.css';
 
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.error('No se pudo registrar el service worker', error);
+    });
+  });
+}
+
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 5 * 60 * 1000, retry: 1 } },
 });

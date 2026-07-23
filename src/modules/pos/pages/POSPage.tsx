@@ -15,6 +15,7 @@ import toast from 'react-hot-toast';
 import type { Product, ProductPrice, Category, Company, Client, PriceTier, PaymentMethod, CreditAccount, ProductLot } from '../../../shared/types';
 import { productLotService } from '../../stock/services/productLotService';
 import { useOpenClientCredits } from '../../credits/hooks/useCredits';
+import { useAuth } from '../../../app/providers/AuthProvider';
 
 const IGV_RATE = 0.18;
 
@@ -52,8 +53,12 @@ interface CartItem {
   lotCurrentQty?: number;   // stock cap for this specific lot
 }
 
-function resolvePrice(product: Product, tierId: string, companyId: string): number | undefined {
+function resolvePrice(product: Product, tierId: string, companyId: string, branchId?: string): number | undefined {
   if (!product.prices?.length) return undefined;
+  const branchCompany = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.branchId === branchId && p.companyId === companyId);
+  if (branchCompany) return branchCompany.price;
+  const branchGlobal = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.branchId === branchId && !p.companyId);
+  if (branchGlobal) return branchGlobal.price;
   const byCompany = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.companyId === companyId);
   if (byCompany) return byCompany.price;
   const global = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && !p.companyId);
@@ -63,6 +68,7 @@ function resolvePrice(product: Product, tierId: string, companyId: string): numb
 const BROWSE_LIMIT = 24;
 
 export function POSPage() {
+  const { selectedBranch } = useAuth();
   // Estados de búsqueda/paginación (antes del query para usarlos como params)
   const [categoryId, setCategoryId] = useState<string>('');
   const [selectedParentId, setSelectedParentId] = useState<string>('');
@@ -312,7 +318,7 @@ export function POSPage() {
         const effectiveTier = item.tierOverride || tierId;
         const product = products.find((p) => p.id === item.productId);
         if (!product) return item;
-        const price = resolvePrice(product, effectiveTier, companyId);
+        const price = resolvePrice(product, effectiveTier, companyId, selectedBranch?.id);
         if (price == null || price === item.unitPrice) return item;
         return { ...item, unitPrice: price };
       }),
@@ -333,7 +339,7 @@ export function POSPage() {
   const addToCart = (product: Product) => {
     if (!companyId) { toast.error('Selecciona una empresa'); return; }
     if (!tierId) { toast.error('Selecciona un rango de precio'); return; }
-    const price = resolvePrice(product, tierId, companyId);
+    const price = resolvePrice(product, tierId, companyId, selectedBranch?.id);
     if (price == null) { toast.error(`Sin precio configurado para ${product.name}`); return; }
 
     if (product.tracksLot) {
@@ -375,7 +381,7 @@ export function POSPage() {
 
   const confirmLotAdd = (lot: ProductLot) => {
     if (!lotSelectorProduct) return;
-    const price = resolvePrice(lotSelectorProduct, tierId, companyId)!;
+    const price = resolvePrice(lotSelectorProduct, tierId, companyId, selectedBranch?.id)!;
     setCart(prev => {
       const existing = prev.find(i => i.productId === lotSelectorProduct.id);
       if (existing) {
@@ -444,7 +450,7 @@ export function POSPage() {
         const product = products.find((p) => p.id === i.productId);
         if (!product) return i;
         const useTier = newTierId || tierId;
-        const price = resolvePrice(product, useTier, companyId);
+        const price = resolvePrice(product, useTier, companyId, selectedBranch?.id);
         if (price == null) {
           toast.error('Sin precio configurado para ese rango');
           return i;
@@ -493,20 +499,67 @@ export function POSPage() {
 
   const splitTotal = splitPayments.reduce((s, p) => s + (p.amount || 0), 0);
   const splitRemaining = Math.round((total - splitTotal) * 100) / 100;
+  const paymentMethodsById = useMemo(() => {
+    const map = new Map<string, PaymentMethod>();
+    paymentMethods.forEach((method) => map.set(method.id, method));
+    return map;
+  }, [paymentMethods]);
+
+  const isCashLikeMethod = (paymentMethodId: string) => {
+    const name = paymentMethodsById.get(paymentMethodId)?.name?.toLowerCase() || '';
+    return /efectivo|cash|contado/.test(name);
+  };
+
+  const hasCashPayment = splitPayments.some((payment) => (
+    payment.amount > 0 && isCashLikeMethod(payment.paymentMethodId)
+  ));
 
   const confirmSale = async () => {
+    let payloadPayments: { paymentMethodId: string; amount: number }[] = [];
+
     if (isCredit) {
       if (!clientId) { toast.error('Selecciona un cliente para la venta a crédito'); return; }
       if (creditAccountId === 'new' && !creditName.trim()) { toast.error('Ingresa un nombre para la cuenta de crédito'); return; }
     } else {
       const validPayments = splitPayments.filter(p => p.paymentMethodId && p.amount > 0);
       if (validPayments.length === 0) { toast.error('Ingresa al menos un método de pago con monto'); return; }
-      if (Math.abs(splitTotal - total) > 0.01) {
-        toast.error(`La suma de pagos (${splitTotal.toFixed(2)}) no coincide con el total (${total.toFixed(2)})`);
+
+      const totalCents = Math.round(total * 100);
+      const cashPayments = validPayments.filter((payment) => isCashLikeMethod(payment.paymentMethodId));
+      const nonCashPayments = validPayments.filter((payment) => !isCashLikeMethod(payment.paymentMethodId));
+      const nonCashCents = nonCashPayments.reduce((sum, payment) => sum + Math.round(payment.amount * 100), 0);
+
+      if (cashPayments.length > 1) {
+        toast.error('Usa un solo método de pago en efectivo');
         return;
       }
+
+      if (cashPayments.length === 0) {
+        if (Math.round(splitTotal * 100) !== totalCents) {
+          toast.error(`La suma de pagos (${splitTotal.toFixed(2)}) no coincide con el total (${total.toFixed(2)})`);
+          return;
+        }
+        payloadPayments = validPayments;
+      } else {
+        const cashDueCents = totalCents - nonCashCents;
+        const cashReceivedCents = Math.round(cashPayments[0].amount * 100);
+
+        if (cashDueCents <= 0) {
+          toast.error('Los pagos digitales ya cubren el total; elimina el pago en efectivo');
+          return;
+        }
+        if (cashReceivedCents < cashDueCents) {
+          toast.error(`Falta S/ ${((cashDueCents - cashReceivedCents) / 100).toFixed(2)} para completar la venta`);
+          return;
+        }
+
+        payloadPayments = validPayments.map((payment) => (
+          isCashLikeMethod(payment.paymentMethodId)
+            ? { ...payment, amount: cashDueCents / 100 }
+            : payment
+        ));
+      }
     }
-    const validPayments = isCredit ? [] : splitPayments.filter(p => p.paymentMethodId && p.amount > 0);
     try {
       if (sourceQuoteId) {
         await convertQuote.mutateAsync({
@@ -516,7 +569,7 @@ export function POSPage() {
             clientId: clientId || undefined,
             voucherType,
             isCredit,
-            payments: validPayments,
+            payments: payloadPayments,
           },
         });
       } else {
@@ -534,7 +587,7 @@ export function POSPage() {
             unitPrice: i.unitPrice,
             ...(i.lotId ? { lotId: i.lotId } : {}),
           })),
-          payments: validPayments,
+          payments: payloadPayments,
         } as any);
       }
       setCart([]);
@@ -721,7 +774,7 @@ export function POSPage() {
             {viewMode === 'list' && (
               <div className="space-y-1.5">
                 {filteredProducts.map((p) => {
-                  const price = tierId && companyId ? resolvePrice(p, tierId, companyId) : undefined;
+                  const price = tierId && companyId ? resolvePrice(p, tierId, companyId, selectedBranch?.id) : undefined;
                   const qty = cartQty(p.id);
                   const stock = stockByProduct[p.id] ?? 0;
                   const available = stock - qty;
@@ -813,7 +866,7 @@ export function POSPage() {
             {viewMode === 'grid' && (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
               {filteredProducts.map((p) => {
-                const price = tierId && companyId ? resolvePrice(p, tierId, companyId) : undefined;
+                const price = tierId && companyId ? resolvePrice(p, tierId, companyId, selectedBranch?.id) : undefined;
                 const qty = cartQty(p.id);
                 const stock = stockByProduct[p.id] ?? 0;
                 const available = stock - qty;
@@ -1588,10 +1641,21 @@ export function POSPage() {
                     {splitPayments.length > 0 && (
                       <div className={`mt-3 rounded-xl px-4 py-3 flex items-center justify-between ${
                         Math.abs(splitRemaining) <= 0.01 ? 'bg-green-50 border-2 border-green-200' :
-                        splitRemaining > 0 ? 'bg-orange-50 border-2 border-orange-200' : 'bg-blue-50 border-2 border-blue-200'
+                        splitRemaining > 0 ? 'bg-orange-50 border-2 border-orange-200' :
+                        hasCashPayment ? 'bg-blue-50 border-2 border-blue-200' : 'bg-red-50 border-2 border-red-200'
                       }`}>
-                        <span className={`font-bold text-base ${Math.abs(splitRemaining) <= 0.01 ? 'text-green-700' : splitRemaining > 0 ? 'text-orange-700' : 'text-blue-700'}`}>
-                          {Math.abs(splitRemaining) <= 0.01 ? '✓ Pago completo' : splitRemaining > 0 ? `Falta S/ ${splitRemaining.toFixed(2)}` : `Vuelto S/ ${Math.abs(splitRemaining).toFixed(2)}`}
+                        <span className={`font-bold text-base ${
+                          Math.abs(splitRemaining) <= 0.01 ? 'text-green-700' :
+                          splitRemaining > 0 ? 'text-orange-700' :
+                          hasCashPayment ? 'text-blue-700' : 'text-red-700'
+                        }`}>
+                          {Math.abs(splitRemaining) <= 0.01
+                            ? 'Pago completo'
+                            : splitRemaining > 0
+                              ? `Falta S/ ${splitRemaining.toFixed(2)}`
+                              : hasCashPayment
+                                ? `Vuelto S/ ${Math.abs(splitRemaining).toFixed(2)}`
+                                : `Exceso S/ ${Math.abs(splitRemaining).toFixed(2)}`}
                         </span>
                         {splitRemaining > 0.01 && (
                           <button type="button" onClick={() => {

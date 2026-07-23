@@ -13,10 +13,12 @@ import { DataTable } from '../../../shared/components/DataTable';
 import { Modal } from '../../../shared/components/Modal';
 import { Pagination } from '../../../shared/components/Pagination';
 import { SearchableSelect } from '../../../shared/components/SearchableSelect';
-import { Receipt, Trash2, Eye, CalendarDays, HandshakeIcon, RotateCcw, XCircle, Copy, Download, User, Package, Building2, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
+import { Receipt, Trash2, Eye, CalendarDays, HandshakeIcon, RotateCcw, XCircle, Copy, Download, User, Package, Building2, AlertCircle, CheckCircle2, Clock, Printer } from 'lucide-react';
+import { downloadSalePdf, openSalePdf } from '../utils/salePdf';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 import type { Sale, Loan, Company, Product, ProductPrice, Client, PriceTier, PaymentMethod, Stock } from '../../../shared/types';
+import { useAuth } from '../../../app/providers/AuthProvider';
 
 function getMonthStart() {
   const now = new Date();
@@ -37,6 +39,7 @@ interface PaymentSplit {
 type PaymentMode = string; // paymentMethodId | 'MIXED' | 'CREDIT'
 
 export function SalesPage() {
+  const { selectedBranch } = useAuth();
   const [activeTab, setActiveTab] = useState<'sales' | 'boletas' | 'facturas' | 'loans'>('sales');
   const [page, setPage] = useState(1);
   const [boletaPage, setBoletaPage] = useState(1);
@@ -132,6 +135,10 @@ export function SalesPage() {
 
   const getUnitPrice = (product: Product | undefined, tierId: string, companyId: string): number | undefined => {
     if (!product?.prices?.length) return undefined;
+    const branchCompany = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.branchId === selectedBranch?.id && p.companyId === companyId);
+    if (branchCompany) return branchCompany.price;
+    const branchGlobal = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.branchId === selectedBranch?.id && !p.companyId);
+    if (branchGlobal) return branchGlobal.price;
     const companyPrice = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && p.companyId === companyId);
     if (companyPrice) return companyPrice.price;
     const globalPrice = product.prices.find((p: ProductPrice) => p.priceTierId === tierId && !p.companyId);
@@ -297,6 +304,12 @@ export function SalesPage() {
   const getCompanyName = (id?: string, name?: string) => name || (id ? companyMap.get(id)?.name || 'N/A' : 'Mixta');
   const getClientName = (id?: string) => id ? clientMap.get(id)?.name || 'N/A' : 'Sin cliente';
   const getProductName = (id: string, name?: string) => name || productMap.get(id)?.name || id;
+  const getSalePdfParams = (sale: Sale) => ({
+    sale,
+    companies: companyList,
+    client: sale.clientId ? clientMap.get(sale.clientId) : undefined,
+    products,
+  });
 
   const saleBaseById = useMemo(() => {
     const allSales: Sale[] = [...sales, ...boletas, ...facturas];
@@ -963,6 +976,23 @@ export function SalesPage() {
                   </div>
                 )}
               </div>
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => openSalePdf(getSalePdfParams(viewingSale))}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-primary-200 bg-primary-50 text-primary-700 hover:bg-primary-100 text-sm font-medium transition-colors"
+              >
+                <Printer size={15} /> Ver / imprimir PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadSalePdf(getSalePdfParams(viewingSale))}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 text-sm font-medium transition-colors"
+              >
+                <Download size={15} /> Descargar PDF
+              </button>
             </div>
 
             {/* Desglose de pagos */}

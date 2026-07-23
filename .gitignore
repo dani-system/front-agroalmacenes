@@ -6,3 +6,8 @@ CLAUDE.md
 .env.*.local
 *.tsbuildinfo
 .DS_Store
+
+# Local customer-data migration artifacts
+importacion-productos/
+productos_activos_1889.*.csv
+productos_activos_1889.*.json

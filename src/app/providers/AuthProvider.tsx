@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '../../shared/services/api';
-import type { User } from '../../shared/types';
+import type { Branch, User } from '../../shared/types';
 
 interface AuthContextType {
   user: User | null;
@@ -8,6 +8,9 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
+  branches: Branch[];
+  selectedBranch: Branch | null;
+  selectBranch: (branchId: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -16,6 +19,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [isLoading, setIsLoading] = useState(true);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
 
   const fetchUser = useCallback(async () => {
     if (!token) {
@@ -25,6 +30,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data } = await api.get('/auth/me');
       setUser(data.data);
+      const branchResponse = await api.get('/branches/accessible');
+      const availableBranches: Branch[] = branchResponse.data.data || [];
+      setBranches(availableBranches);
+      const savedId = localStorage.getItem('selectedBranchId');
+      const activeBranch = availableBranches.find((branch) => branch.id === savedId) || availableBranches[0] || null;
+      if (activeBranch) {
+        localStorage.setItem('selectedBranchId', activeBranch.id);
+        setSelectedBranch(activeBranch);
+      }
     } catch (error: any) {
       localStorage.removeItem('token');
       setToken(null);
@@ -41,16 +55,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('token', res.accessToken);
     setToken(res.accessToken);
     setUser(res.user);
+    const branchResponse = await api.get('/branches/accessible');
+    const availableBranches: Branch[] = branchResponse.data.data || [];
+    setBranches(availableBranches);
+    const savedId = localStorage.getItem('selectedBranchId');
+    const activeBranch = availableBranches.find((branch) => branch.id === savedId) || availableBranches[0] || null;
+    if (activeBranch) {
+      localStorage.setItem('selectedBranchId', activeBranch.id);
+      setSelectedBranch(activeBranch);
+    }
   };
 
   const logout = () => {
     localStorage.removeItem('token');
     setToken(null);
     setUser(null);
+    setBranches([]);
+    setSelectedBranch(null);
+    localStorage.removeItem('selectedBranchId');
+  };
+
+  const selectBranch = (branchId: string) => {
+    const branch = branches.find((item) => item.id === branchId);
+    if (!branch) return;
+    localStorage.setItem('selectedBranchId', branch.id);
+    setSelectedBranch(branch);
+    window.location.reload();
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, logout, isLoading, branches, selectedBranch, selectBranch }}>
       {children}
     </AuthContext.Provider>
   );

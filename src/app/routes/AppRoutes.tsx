@@ -21,6 +21,7 @@ const ClientCreditDetailPage = lazy(() => import('../../modules/credits/pages/Cl
 const CategoriesPage = lazy(() => import('../../modules/categories/pages/CategoriesPage').then(m => ({ default: m.CategoriesPage })));
 const UnitsPage = lazy(() => import('../../modules/units/pages/UnitsPage').then(m => ({ default: m.UnitsPage })));
 const DashboardPage = lazy(() => import('../../modules/dashboard/pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const AdminPage = lazy(() => import('../../modules/admin/pages/AdminPage').then(m => ({ default: m.AdminPage })));
 const UsersPage = lazy(() => import('../../modules/users/pages/UsersPage').then(m => ({ default: m.UsersPage })));
 const KardexPage = lazy(() => import('../../modules/kardex/pages/KardexPage').then(m => ({ default: m.KardexPage })));
 const KardexProductDetailPage = lazy(() => import('../../modules/kardex/pages/KardexProductDetailPage').then(m => ({ default: m.KardexProductDetailPage })));
@@ -29,6 +30,7 @@ const AgreementDetailPage = lazy(() => import('../../modules/accounts-payable/pa
 const POSPage = lazy(() => import('../../modules/pos/pages/POSPage').then(m => ({ default: m.POSPage })));
 const QuotesPage = lazy(() => import('../../modules/quotes/pages/QuotesPage').then(m => ({ default: m.QuotesPage })));
 const InvoicesPage = lazy(() => import('../../modules/invoices/pages/InvoicesPage').then(m => ({ default: m.InvoicesPage })));
+const BranchesPage = lazy(() => import('../../modules/branches/pages/BranchesPage').then(m => ({ default: m.BranchesPage })));
 
 const Loading = () => <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600" /></div>;
 
@@ -58,7 +60,9 @@ export function AppRoutes() {
         <Route path="units" element={<Suspense fallback={<Loading />}><UnitsPage /></Suspense>} />
         <Route path="companies" element={<Suspense fallback={<Loading />}><CompaniesPage /></Suspense>} />
         <Route path="price-tiers" element={<Suspense fallback={<Loading />}><PriceTiersPage /></Suspense>} />
-        <Route path="users" element={<Suspense fallback={<Loading />}><UsersPage /></Suspense>} />
+        <Route path="admin" element={<ProtectedRoute roles={['ADMIN']}><Suspense fallback={<Loading />}><AdminPage /></Suspense></ProtectedRoute>} />
+        <Route path="users" element={<ProtectedRoute roles={['ADMIN']}><Suspense fallback={<Loading />}><UsersPage /></Suspense></ProtectedRoute>} />
+        <Route path="branches" element={<ProtectedRoute roles={['ADMIN']}><Suspense fallback={<Loading />}><BranchesPage /></Suspense></ProtectedRoute>} />
         <Route path="kardex" element={<Suspense fallback={<Loading />}><KardexPage /></Suspense>} />
         <Route path="kardex/product/:productId" element={<Suspense fallback={<Loading />}><KardexProductDetailPage /></Suspense>} />
         <Route path="accounts-payable" element={<Suspense fallback={<Loading />}><AccountsPayablePage /></Suspense>} />

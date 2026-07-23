@@ -1,0 +1,34 @@
+{
+  "name": "Agrosystem",
+  "short_name": "Agrosystem",
+  "description": "Gestion de ventas, inventario y caja para tiendas agropecuarias",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f9fafb",
+  "theme_color": "#16a34a",
+  "lang": "es-PE",
+  "icons": [
+    {
+      "src": "/Icon/logosin.png",
+      "sizes": "500x500",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nueva venta",
+      "short_name": "POS",
+      "url": "/pos",
+      "icons": [{ "src": "/Icon/logosin.png", "sizes": "500x500", "type": "image/png" }]
+    },
+    {
+      "name": "Stock",
+      "short_name": "Stock",
+      "url": "/stock",
+      "icons": [{ "src": "/Icon/logosin.png", "sizes": "500x500", "type": "image/png" }]
+    }
+  ]
+}
